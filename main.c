@@ -3,7 +3,16 @@
 
   == Defaults...
 
-  fan gpio pin : 18
+  fan  gpio pin : 18
+  fan  low temp : 50 degrees C
+  fan high temp : 70 degrees C
+
+  == Driver...
+
+  Uses an NPN transistor (S8050) to driver the fan with a 1N4148
+  flyback diode.
+
+  See the Schematic in the "hardware" directory.
 */
 
 #include <unistd.h>
@@ -48,8 +57,15 @@ handler(__attribute__((unused)) int signal)
 static void
 usage(int exit_code)
 {
-	printf("pifan <fan pin>\n" \
-	       "<fan pin> : The fan control pin (18)\n");
+	printf("pifan -pin n -lower n -upper n [-help]\n"
+	       "\n"
+	       "\t-pin : The fan control gpio pin\n"
+	       "\t-lower : Turn the fan off below this temperature (deg C)\n"
+	       "\t-upper : Turn the fan on above this temperature (deg C)\n"
+	       "\t-help  : Display help and exit.\n"
+	       "\n"
+	       "Between the low and high temperatures, PWM is used to vary\n"
+	       "the speed of the fan.\n");
 
 	exit(exit_code);
 }
@@ -67,24 +83,41 @@ main(int argc, char *argv[])
 	int long_index = 0;
 	char ip_address[NAME_MAX];
 	char ip_port[NAME_MAX];
-	char *token;
-	unsigned i;
-	unsigned j;
-	int fan_pin;
-	int callback_id;
-	struct fan_params fan_input;
+	struct fan_settings settings;
 
 	static struct option long_options[] = {
-		{"help",       required_argument, 0,  'h' },
-		{0,            0,                 0,  0   }
+		{"pin",   required_argument, NULL, 'p'},
+		{"lower", required_argument, NULL, 'l'},
+		{"upper", required_argument, NULL, 'u'},
+		{"help",  no_argument,       NULL, 'h'},
+		{NULL,    0,                 NULL,   0}
 	};
 
+	/*
+	  Only support using the pigpio daemon on the local host for now.
+	*/
 	strcpy(ip_address, "localhost");
 	strcpy(ip_port, "8888");
 
-	while ((opt = getopt_long(argc, argv, "h", 
-				  long_options, &long_index )) != -1) {
+	/*
+	  Don't allow default values.
+	*/
+	settings.pin = -1;
+	settings.lower = -1;
+	settings.upper = -1;
+
+	while ((opt = getopt_long_only(argc, argv, "p:l:u:h", 
+				       long_options, &long_index )) != -1) {
 		switch (opt) {
+		case 'p':
+			settings.pin = atoi(optarg);
+			break;
+		case 'l':
+			settings.lower = atoi(optarg);
+			break;
+		case 'u':
+			settings.upper = atoi(optarg);
+			break;
 		case 'h':
 			usage(EXIT_SUCCESS);
 			break;
@@ -95,35 +128,13 @@ main(int argc, char *argv[])
 		}
 	}
 
-	if (1 != (argc - optind)) {
-		fprintf(stderr, "Fan GPIO Pin Must Be Specified\n");
+	if (-1 == settings.pin || -1 == settings.lower || -1 == settings.upper)
 		usage(EXIT_FAILURE);
-	}
 
-	for (i = 0; i < 3; ++i) {
-		for (j = 0; j < (sizeof(pins[i]) / sizeof(int)); ++j)
-			pins[i][j] = -1;
+	settings.pi = pigpio_start(ip_address, ip_port);
 
-		j = 0;
-		token = strtok(argv[optind++], ":");
-
-		while (NULL != token) {
-			pins[i][j++] = atoi(token);
-			token = strtok(NULL, ":");
-		}
-
-		for (j = 0; j < (sizeof(pins[i]) / sizeof(int)); ++j) {
-			if (-1 == pins[i][j]) {
-				fprintf(stderr, "Invalid GPIO Pin\n");
-				return EXIT_FAILURE;
-			}
-		}
-	}
-
-	pi = pigpio_start(ip_address, ip_port);
-
-	if (0 > pi) {
-		fprintf(stderr, "pigpio_start() failed: %d\n", pi);
+	if (0 > settings.pi) {
+		fprintf(stderr, "pigpio_start() failed: %d\n", settings.pi);
 
 		return EXIT_FAILURE;
 	}
@@ -141,12 +152,7 @@ main(int argc, char *argv[])
 	  Start the Fan Thread
 	*/
 
-	fan_pin = atoi(argv[optind++]);
-
-	fan_input.pin = fan_pin;
-	fan_input.pi = pi;
-
-	rc = pthread_create(&fan_thread, NULL, fan, (void *)&fan_input);
+	rc = pthread_create(&fan_thread, NULL, fan, (void *)&settings);
 
 	if (0 != rc) {
 		fprintf(stderr, "pthread_create() failed: %d\n", rc);
